@@ -81,6 +81,9 @@ void mld(bool is_trans, char m_name) {
     }
     base_addr += row_byte_stride;
   }*/
+  fprintf(stderr, "!!!! mld %c START: base_addr=%lx, rmax_mem=%d, lmul=%d, cmax_mem=%d, row_byte_stride=%ld\n",
+    m_name, base_addr, rmax_mem, lmul, cmax_mem, row_byte_stride);
+
   for (int row = 0; row < rmax_mem; row++) {
     for (int m = 0; m < lmul; m++) {
       for (int idx = 0; idx < cmax_mem; idx++) {
@@ -92,7 +95,7 @@ void mld(bool is_trans, char m_name) {
       }
     }
   }
-  fprintf(stderr, "!!!! mld %c: base_addr=%lx, rmax_mem=%d, lmul=%d, cmax_mem=%d, row_byte_stride=%ld\n",
+  fprintf(stderr, "!!!! mld %c END: base_addr=%lx, rmax_mem=%d, lmul=%d, cmax_mem=%d, row_byte_stride=%ld\n",
     m_name, base_addr, rmax_mem, lmul, cmax_mem, row_byte_stride);
 }
 
@@ -151,6 +154,9 @@ void mst(bool is_trans, char m_name) {
     }
     base_addr += row_byte_stride;
   }*/
+  fprintf(stderr, "!!!! mst %c START: base_addr=%lx, rmax_mem=%d, lmul=%d, cmax_mem=%d, row_byte_stride=%ld\n",
+    m_name, base_addr, rmax_mem, lmul, cmax_mem, row_byte_stride);
+
   for (int row = 0; row < rmax_mem; row++) {
     for (int m = 0; m < lmul; m++) {
       for (int idx = 0; idx < cmax_mem; idx++) {
@@ -162,8 +168,8 @@ void mst(bool is_trans, char m_name) {
       }
     }
   }
-  fprintf(stderr, "!!!! mst: base_addr=%lx, rmax_mem=%d, lmul=%d, cmax_mem=%d, row_byte_stride=%ld\n",
-    base_addr, rmax_mem, lmul, cmax_mem, row_byte_stride);
+  fprintf(stderr, "!!!! mst %c END: base_addr=%lx, rmax_mem=%d, lmul=%d, cmax_mem=%d, row_byte_stride=%ld\n",
+    m_name, base_addr, rmax_mem, lmul, cmax_mem, row_byte_stride);
 }
 
 

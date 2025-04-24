@@ -25,6 +25,21 @@
 #define HOSTTLB_SIZE_SHIFT 12
 #define HOSTTLB_SIZE (1 << HOSTTLB_SIZE_SHIFT)
 
+// for AMU mem trace dump
+#define _FMT_PADDR "0x%012lx" // paddr bits=48, %012 to save dump file size
+void amu_trace_dump(char c, int type, paddr_t paddr){
+  // AI-TODO: assume all mloads are 64B-aligned, only dump the first access
+  if (paddr & 0x3F) {
+    return;
+  }
+
+  if (type == MEM_TYPE_MATRIX_READ) {
+    fprintf(stderr, "%cr " _FMT_PADDR "\n", c, paddr);
+  } else if (type == MEM_TYPE_MATRIX_WRITE) {
+    fprintf(stderr, "%cw " _FMT_PADDR "\n", c, paddr);
+  }
+}
+
 typedef struct {
   uint8_t *offset; // offset from the guest virtual address of the data page to the host virtual address
   vaddr_t gvpn; // guest virtual page number
@@ -86,9 +101,7 @@ static word_t hosttlb_read_slowpath(struct Decode *s, vaddr_t vaddr, int len, in
     e->gvpn = hosttlb_vpn(vaddr);
   }
   Logtr("Slowpath, vaddr " FMT_WORD " --> paddr: " FMT_PADDR, vaddr, paddr);
-  if (type == MEM_TYPE_MATRIX_READ) {
-    fprintf(stderr, "?? slow-path hosttlb_read paddr " FMT_WORD ", len: %d, type: %d\n", paddr, len, type);
-  }
+  amu_trace_dump('s', type, paddr);
   return data;
 }
 
@@ -105,9 +118,7 @@ static void hosttlb_write_slowpath(struct Decode *s, vaddr_t vaddr, int len, wor
     #endif
     e->gvpn = hosttlb_vpn(vaddr);
   }
-  if (type == MEM_TYPE_MATRIX_WRITE) {
-    fprintf(stderr, "?? slow-path hosttlb_write paddr " FMT_WORD ", len: %d, type: %d\n", paddr, len, type);
-  }
+  amu_trace_dump('s', type, paddr);
 }
 
 word_t hosttlb_read(struct Decode *s, vaddr_t vaddr, int len, int type) {
@@ -116,9 +127,7 @@ word_t hosttlb_read(struct Decode *s, vaddr_t vaddr, int len, int type) {
   extern bool has_two_stage_translation();
   if(has_two_stage_translation()){
     paddr_t paddr = va2pa(s, vaddr, len, type);
-    if (type == MEM_TYPE_MATRIX_READ) {
-      fprintf(stderr, "?? 2-stage hosttlb_read paddr " FMT_WORD ", len: %d, type: %d\n", paddr, len, type);
-    }
+    amu_trace_dump('2', type, paddr);
     return paddr_read(paddr, len, type, type, cpu.mode, vaddr);
   }
 #endif
@@ -133,10 +142,8 @@ word_t hosttlb_read(struct Decode *s, vaddr_t vaddr, int len, int type) {
     #ifdef CONFIG_USE_SPARSEMM
     return sparse_mem_wread(get_sparsemm(), (vaddr_t)e->offset + vaddr, len);
     #else
-    if (type == MEM_TYPE_MATRIX_READ) {
-      fprintf(stderr, "?? fast-path hosttlb_read paddr " FMT_WORD ", len: %d, type: %d\n", (paddr_t)host_to_guest(e->offset) + vaddr, len, type);
-      // guest_to_host(e->offset) when save, so in order to get the original paddr, we use host_to_guest here
-    }
+    // guest_to_host(e->offset) when save, so in order to get the original paddr, we use host_to_guest here
+    amu_trace_dump('f', type, (paddr_t)host_to_guest(e->offset) + vaddr);
     return host_read(e->offset + vaddr, len);
     #endif
   }
@@ -171,9 +178,7 @@ void hosttlb_write(struct Decode *s, vaddr_t vaddr, int len, word_t data, int ty
 #ifdef CONFIG_RVH
   if(has_two_stage_translation()){
     paddr_t paddr = va2pa(s, vaddr, len, MEM_TYPE_WRITE);
-    if (type == MEM_TYPE_MATRIX_WRITE) {
-      fprintf(stderr, "?? 2-stage hosttlb_write paddr " FMT_WORD ", len: %d, type: %d\n", paddr, len, type);
-    }
+    amu_trace_dump('2', type, paddr);
     return paddr_write(paddr, len, data, cpu.mode, vaddr);
   }
 #endif
@@ -191,9 +196,7 @@ void hosttlb_write(struct Decode *s, vaddr_t vaddr, int len, word_t data, int ty
   // Also do store commit check with performance optimization enlabled
   store_commit_queue_push(host_to_guest(host_addr), data, len, 0);
 #endif // CONFIG_DIFFTEST_STORE_COMMIT
-  if (type == MEM_TYPE_MATRIX_WRITE) {
-    fprintf(stderr, "?? fast-path hosttlb_write paddr " FMT_WORD ", len: %d, type: %d\n", (paddr_t)host_to_guest(e->offset) + vaddr, len, type);
-  }
+  amu_trace_dump('f', type, (paddr_t)host_to_guest(e->offset) + vaddr);
   host_write(host_addr, len, data);
 #endif // NOT CONFIG_USE_SPARSEMM
 }
