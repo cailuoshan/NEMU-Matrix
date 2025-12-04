@@ -16,6 +16,8 @@
 
 #include "../local-include/intr.h"
 #include <profiling/profiling_control.h>
+#include <stdbool.h>
+#include "common.h"
 #include "cpu/difftest.h"
 
 def_EHelper(inv) {
@@ -46,6 +48,10 @@ def_EHelper(nemu_trap) {
       reset_inst_counters();
       difftest_skip_ref();
     }
+  } else if (cpu.gpr[10]._64 == 0x103) {
+      xsai_dump_trace = true;
+  } else if (cpu.gpr[10]._64 == 0x104) {
+      xsai_dump_trace = false;
   } else {
       rtl_hostcall(s, HOSTCALL_EXIT,NULL, &cpu.gpr[10]._64, NULL, 0); // gpr[10] is $a0
       longjmp_context(NEMU_EXEC_END);

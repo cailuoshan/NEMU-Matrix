@@ -14,6 +14,9 @@
 * See the Mulan PSL v2 for more details.
 ***************************************************************************************/
 
+#include "cachesim.h"
+#include "common.h"
+#include "macro.h"
 #include <isa.h>
 #include <memory/host.h>
 #include <memory/vaddr.h>
@@ -21,22 +24,66 @@
 #include <memory/sparseram.h>
 #include <cpu/cpu.h>
 #include <cpu/decode.h>
+#include <stdbool.h>
 
 #define HOSTTLB_SIZE_SHIFT 12
 #define HOSTTLB_SIZE (1 << HOSTTLB_SIZE_SHIFT)
 
+bool xsai_dump_trace = false;
+
 // for AMU mem trace dump
 #define _FMT_PADDR "0x%012lx" // paddr bits=48, %012 to save dump file size
-void amu_trace_dump(char c, int type, paddr_t paddr){
-  // AI-TODO: assume all mloads are 64B-aligned, only dump the first access
-  if (paddr & 0x3F) {
+static void amu_trace_dump(char c, int type, paddr_t paddr){
+  if (!xsai_dump_trace) {
     return;
   }
 
-  if (type == MEM_TYPE_MATRIX_READ) {
-    fprintf(stderr, "%cr " _FMT_PADDR "\n", c, paddr);
-  } else if (type == MEM_TYPE_MATRIX_WRITE) {
-    fprintf(stderr, "%cw " _FMT_PADDR "\n", c, paddr);
+  static bool init_flag = false;
+  static CacheSimulator* icache = NULL;
+  static CacheSimulator* dcache = NULL;
+
+  // TODO: add TLB
+  if (!init_flag) {
+    icache = cache_simulator_create(256, 4, 64, false);
+    dcache = cache_simulator_create(128, 8, 64, true);
+    init_flag = true;
+  }
+
+  paddr_t addr_to_l2 = 0;
+  bool miss = false;
+  switch (type) {
+    case MEM_TYPE_IFETCH: 
+      miss = !cache_simulator_access(icache, paddr, &addr_to_l2);
+      if(miss) fprintf(stderr, "IF " _FMT_PADDR "\n", addr_to_l2);
+      break;
+    case MEM_TYPE_READ:
+      miss = !cache_simulator_access(dcache, paddr, &addr_to_l2);
+      if(miss) fprintf(stderr, "LD " _FMT_PADDR "\n", addr_to_l2);
+      break;
+    case MEM_TYPE_WRITE:
+      miss = !cache_simulator_access(dcache, paddr, &addr_to_l2);
+      if(miss) fprintf(stderr, "ST " _FMT_PADDR "\n", addr_to_l2);
+      break;
+    // the following two types may be used for TLB behavior, check log to see whether they exist
+    case MEM_TYPE_IFETCH_READ:
+      fprintf(stderr, "FR " _FMT_PADDR "\n", paddr);
+      break;
+    case MEM_TYPE_WRITE_READ:
+      fprintf(stderr, "WR " _FMT_PADDR "\n", paddr);
+      break;
+    default:
+      // for matrix read/write, since it is linear memory, we only dump 64B-aligned accesses
+      if (paddr & 0x3F) {
+        return;
+      }
+      if (type == MEM_TYPE_MATRIX_READ) {
+        fprintf(stderr, "MR " _FMT_PADDR "\n", paddr);
+      } else if (type == MEM_TYPE_MATRIX_WRITE) {
+        fprintf(stderr, "MW " _FMT_PADDR "\n", paddr);
+      }
+      cache_simulator_evict(dcache, paddr);
+    
+      break;
   }
 }
 

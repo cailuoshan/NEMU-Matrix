@@ -53,6 +53,9 @@ struct br_info {
   int taken;
   int type; // 0: branch 1: jmp
 };
+
+extern bool xsai_dump_trace;
+
 #include <debug.h>
 
 #endif

@@ -1,79 +1,79 @@
 import re
+from math import log2
 
-# 将 addr 对齐到 cacheline，并且提取 bank index
-def align_addr_bankindex(addr):
-    # addr[8:6] = bank_idx, addr[5:0] = offset => 0
-    # 取十六进制地址字符串的后三位，转化为数值
-    assert(len(addr) >= 3)
-    last_3_digits = int(addr[-3:], 16)
+# CAgent/ULAgent/MAgent 共享的 L2 配置
+BlockSize = 64
+L2NBanks = 2
+NumAgents = 2 + L2NBanks
 
-    # 将最低6个二进制位清0
-    cleared_bits = last_3_digits & ~0x3F
-    
-    # 获取 bank_idx
-    bank_idx = (last_3_digits & 0x1C0) >> 6
+def get_agent_id(op, bankIdx):
+    """
+    根据操作类型和bank index获取agent id。
+    CAgent: 0
+    ULAgent: 1
+    MAgent: 2 + bankIdx
+    """
+    if op in ['LD', 'ST', 'EV']: # CAgent
+        return 0
+    elif op in ['IF', 'FR', 'WR']: # ULAgent
+        return 1
+    elif op in ['MR', 'MW']: # MAgent
+        return 2 + bankIdx
+    else:
+        assert False, "Unknown operation"
 
-    # 转化为字符串并拼接回地址
-    line_address = addr[:-3] + f"{cleared_bits:03x}"
+def get_l2_addr_agentId(op, addrStr):
+    """
+    获取L2缓存行地址的bank index。
+    假设地址是十六进制字符串，格式为0xXXXXXX。
+    """
+    offsetbits = int(log2(BlockSize))  # 计算block的位数
+    bankbits = int(log2(L2NBanks))  # 计算bank的位数
+    addr = int(addrStr, 16)  # 将地址从十六进制字符串转换为整数
 
-    return line_address, bank_idx
+    # 地址最低的offsetbits位是block offset， 其次是bank index
+    baseAddr = addr & (~((1 << offsetbits) - 1))
+    bankIdx = (addr >> offsetbits) & ((1 << bankbits) - 1)
+    agentId = get_agent_id(op, bankIdx)
 
-# 1. 转化为 cacheline 地址，并且如果该 cacheline 地址和上一个相同（且读/写也相同），则跳过该地址
-# 2. 如果读到了 mst c，添加 fence 标记
-# 3. 给所有 mld c 添加一个标记
-def convert_to_cacheline_dedup(input_file_path, output_file_path):
-    addr_line = re.compile(r'[2sf]([rw]) (0x[0-9a-fA-F]+)')
-    last_addr = None
-    last_op = None
-    is_loadC = 0
+    return agentId, baseAddr
 
-    with open(input_file_path, "r") as input_file, open(output_file_path, "w") as output_file:
-        for line in input_file:
-            is_addr = addr_line.match(line)
+
+def convert_addr(input_file, output_file):
+    # 地址格式：<操作码> 0x<十六进制地址>
+    # 分别是：指令读，数据读，数据写，L1D驱逐，fence，flush，writeback，miss写回
+    ops = ["IF", # 指令读
+           "LD", # 数据读
+           "ST", # 数据写
+           "EV", # L1D驱逐
+           "FR", # IFetch_Read
+           "WR", # Write_Read
+           "MR", # 矩阵读
+           "MW"] # 矩阵写
+
+    with open(input_file, "r") as infile, open(output_file, "w") as outfile:
+        for line in infile:
+            # 如果出现任 ops 中的操作，则处理该行
+            is_addr = re.search(r'(' + '|'.join(ops) + r') (0x[0-9a-fA-F]+)$', line)
 
             if is_addr:
-                operation = is_addr.group(1)
-                address = is_addr.group(2)
+                opStr = is_addr.group(1)
+                addrStr = is_addr.group(2)
+                agentId, baseAddr = get_l2_addr_agentId(opStr, addrStr)
 
-                line_address, bank_idx = align_addr_bankindex(address)
+                # TODO: 区分 C 矩阵读
+                outfile.write(f"{opStr} 0x{baseAddr:012x} {agentId}\n")
 
-                # 写入输出文件
-                if last_addr != line_address or last_op != operation:
-                    output_file.write(f"{'m' if is_loadC else operation} {line_address} {bank_idx}\n")
-                    # all_addrs.add(line_address)
+                if (opStr in ["FR", "WR"]):
+                    assert False, "TLB not supported yet"
 
-                last_addr = line_address
-                last_op = operation
-
-            
             else:
-                # 如果是 mld c 的开始，设置 is_loadC 标志； 结束时清除
-                if re.compile(r'!!!! mld c START').match(line):
-                    is_loadC = 1
-                if re.compile(r'!!!! mld c END').match(line):
-                    is_loadC = 0
-                # 如果是 mst c 的开始，添加 fence 标记
-                if re.compile(r'!!!! mst c START').match(line):
-                    for x in range(8):
-                        output_file.write(f"f 0x000000000000 {x}\n")
+                if re.compile(r'!!!! mst c (START|END)').match(line):
+                    for x in range(NumAgents):
+                        outfile.write(f"FE 0x000000000000 {x}\n") # 添加 fence 标记
                 
-                # NO 如果没有匹配到，则直接写入输出文件
-                output_file.write(line)
+                # 如果没有匹配到，则直接写入输出文件
+                outfile.write(line)
 
 
-# def add_preload(input_file_path):
-#     # 打开文件，读取所有内容
-#     with open(input_file_path, 'r') as file:
-#         original_content = file.read()
-#     # 在内容前添加 preload 地址序列
-#     with open(input_file_path, 'w') as file:
-#         for addr in sorted(all_addrs):
-#             line_address, bank_idx = align_addr_bankindex(addr)
-#             file.write(f"p {line_address} {bank_idx}\n")
-#         file.write(original_content)
-
-# TODO: add multithread processing for speedup?
-convert_to_cacheline_dedup("stderr.txt", "line_trace.txt")
-# print(f"总共有 {len(all_addrs)} 个地址")
-# print(sorted(all_addrs)[0:9])
-# add_preload("line_trace.txt")
+convert_addr("stderr.txt", "line_trace.txt")
