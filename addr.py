@@ -36,6 +36,9 @@ def get_l2_addr_agentId(op, addrStr):
     bankIdx = (addr >> offsetbits) & ((1 << bankbits) - 1)
     agentId = get_agent_id(op, bankIdx)
 
+    # TODO: 将地址裁剪为 32 位
+    baseAddr = baseAddr & 0xFFFFFFFF
+
     return agentId, baseAddr
 
 
@@ -49,8 +52,11 @@ def convert_addr(input_file, output_file):
            "FR", # IFetch_Read
            "WR", # Write_Read
            "MR", # 矩阵读
-           "MW"] # 矩阵写
+           "MW", # 矩阵写
+           "CR"  # C矩阵读（获取写权限）
+           ] 
 
+    is_loadC = 0
     with open(input_file, "r") as infile, open(output_file, "w") as outfile:
         for line in infile:
             # 如果出现任 ops 中的操作，则处理该行
@@ -61,7 +67,8 @@ def convert_addr(input_file, output_file):
                 addrStr = is_addr.group(2)
                 agentId, baseAddr = get_l2_addr_agentId(opStr, addrStr)
 
-                # TODO: 区分 C 矩阵读
+                # 区分 C 矩阵读
+                opStr = "CR" if (opStr == "MR" and is_loadC == 1) else opStr
                 outfile.write(f"{opStr} 0x{baseAddr:012x} {agentId}\n")
 
                 if (opStr in ["FR", "WR"]):
@@ -69,9 +76,12 @@ def convert_addr(input_file, output_file):
 
             else:
                 if re.compile(r'!!!! mst c (START|END)').match(line):
-                    for x in range(NumAgents):
-                        outfile.write(f"FE 0x000000000000 {x}\n") # 添加 fence 标记
-                
+                    outfile.write(f"FE 0x000000000000 0\n") # 添加 fence 标记
+                if re.compile(r'!!!! mld c START').match(line):
+                    is_loadC = 1
+                if re.compile(r'!!!! mld c END').match(line):
+                    is_loadC = 0
+
                 # 如果没有匹配到，则直接写入输出文件
                 outfile.write(line)
 
