@@ -1,26 +1,49 @@
 import re
+import configparser
+from pathlib import Path
 from math import log2
 
 # CAgent/ULAgent/MAgent 共享的 L2 配置
 BlockSize = 64
-L2NBanks = 2
-NumAgents = 2 + L2NBanks
+
+
+def load_config():
+    cfg_path = Path(__file__).resolve().parent.parent / "configuration.ini"
+    parser = configparser.ConfigParser()
+    parser.read(cfg_path)
+
+    # 和 testtop 共用同一个 l2_banks 参数
+    l2_n_banks = parser.getint("testtop", "l2_banks", fallback=1)
+    mode = parser.get("nemu", "mode", fallback="CORE_MATRIX")
+
+    assert l2_n_banks > 0, f"Invalid l2_banks: {l2_n_banks}"
+    assert mode in ["CORE_MATRIX", "CORE_ALONE"], f"Invalid MODE {mode}"
+    return l2_n_banks, mode
+
+L2NBanks, MODE = load_config()
 
 def get_agent_id(op, bankIdx):
     """
     根据操作类型和bank index获取agent id。
-    CAgent: 0
-    ULAgent: 1
-    MAgent: 2 + bankIdx
     """
-    if op in ['LD', 'ST', 'EV']: # CAgent
-        return 0
-    elif op in ['IF', 'FR', 'WR']: # ULAgent
-        return 1
-    elif op in ['MR', 'MW']: # MAgent
-        return 2 + bankIdx
+    if MODE == 'CORE_ALONE':
+        if op in ['LD', 'ST', 'EV', 'MR', 'MW']: # CAgent
+            return 0
+        elif op in ['IF', 'FR', 'WR']: # ULAgent
+            return 1
+        else:
+            assert False, f"Unknown operation {op}"
+    elif MODE == 'CORE_MATRIX':
+        if op in ['LD', 'ST', 'EV']: # CAgent
+            return 0
+        elif op in ['IF', 'FR', 'WR']: # ULAgent
+            return 1
+        elif op in ['MR', 'MW']: # MAgent
+            return 2 + bankIdx
+        else:
+            assert False, f"Unknown operation {op}"
     else:
-        assert False, "Unknown operation"
+        assert False, f"Invalid MODE {MODE}"
 
 def get_l2_addr_agentId(op, addrStr):
     """
@@ -34,12 +57,26 @@ def get_l2_addr_agentId(op, addrStr):
     # 地址最低的offsetbits位是block offset， 其次是bank index
     baseAddr = addr & (~((1 << offsetbits) - 1))
     bankIdx = (addr >> offsetbits) & ((1 << bankbits) - 1)
-    agentId = get_agent_id(op, bankIdx)
 
     # TODO: 将地址裁剪为 32 位
     baseAddr = baseAddr & 0xFFFFFFFF
 
-    return agentId, baseAddr
+    if MODE == 'CORE_ALONE':
+        # CORE_ALONE 逻辑：MR 转 LD, MW 转 ST
+        final_op = op
+        if op == 'MR':
+            final_op = 'LD'
+        elif op == 'MW':
+            final_op = 'ST'
+        
+        agentId = get_agent_id(op, bankIdx)
+        return agentId, baseAddr, final_op
+    elif MODE == 'CORE_MATRIX':
+        # CORE_MATRIX 逻辑
+        agentId = get_agent_id(op, bankIdx)
+        return agentId, baseAddr, op
+    else:
+        assert False, f"Invalid MODE {MODE}"
 
 
 def convert_addr(input_file, output_file):
@@ -53,7 +90,6 @@ def convert_addr(input_file, output_file):
            "WR", # Write_Read
            "MR", # 矩阵读
            "MW", # 矩阵写
-           "CR"  # C矩阵读（获取写权限）
            ] 
 
     is_loadC = 0
@@ -65,11 +101,13 @@ def convert_addr(input_file, output_file):
             if is_addr:
                 opStr = is_addr.group(1)
                 addrStr = is_addr.group(2)
-                agentId, baseAddr = get_l2_addr_agentId(opStr, addrStr)
+                agentId, baseAddr, finalOp = get_l2_addr_agentId(opStr, addrStr)
+                
+                # CORE_MATRIX 模式下恢复 CR 区分逻辑
+                if MODE == 'CORE_MATRIX':
+                    finalOp = "CR" if (opStr == "MR" and is_loadC == 1) else opStr
 
-                # 区分 C 矩阵读
-                opStr = "CR" if (opStr == "MR" and is_loadC == 1) else opStr
-                outfile.write(f"{opStr} 0x{baseAddr:012x} {agentId}\n")
+                outfile.write(f"{finalOp} 0x{baseAddr:012x} {agentId}\n")
 
                 if (opStr in ["FR", "WR"]):
                     assert False, "TLB not supported yet"
@@ -77,10 +115,13 @@ def convert_addr(input_file, output_file):
             else:
                 if re.compile(r'!!!! mst c (START|END)').match(line):
                     outfile.write(f"FE 0x000000000000 0\n") # 添加 fence 标记
-                if re.compile(r'!!!! mld c START').match(line):
-                    is_loadC = 1
-                if re.compile(r'!!!! mld c END').match(line):
-                    is_loadC = 0
+                
+                # 仅在 CORE_MATRIX 模式下追踪 C 矩阵加载状态
+                if MODE == 'CORE_MATRIX':
+                    if re.compile(r'!!!! mld c START').match(line):
+                        is_loadC = 1
+                    if re.compile(r'!!!! mld c END').match(line):
+                        is_loadC = 0
 
                 # 如果没有匹配到，则直接写入输出文件
                 outfile.write(line)
